@@ -109,7 +109,7 @@ static auto ExpectCompleteType(SourceLocation source_loc,
     case Value::Kind::ParameterizedEntityName:
     case Value::Kind::MemberName:
     case Value::Kind::MixinPseudoType:
-      CARBON_FATAL() << "should not see non-type values";
+      CARBON_FATAL("should not see non-type values");
 
     case Value::Kind::IntType:
     case Value::Kind::BoolType:
@@ -195,7 +195,7 @@ static auto ExpectConcreteType(SourceLocation source_loc,
 // Returns whether `type` is a placeholder type, which is a second-class type
 // that cannot be the type of a binding but can be the type of an expression.
 static auto IsPlaceholderType(Nonnull<const Value*> type) -> bool {
-  CARBON_CHECK(IsType(type)) << "expected a type, but found " << *type;
+  CARBON_CHECK(IsType(type), "expected a type, but found {0}", *type);
   return isa<TypeOfParameterizedEntityName, TypeOfMemberName,
              TypeOfMixinPseudoType, TypeOfNamespaceName>(type);
 }
@@ -568,14 +568,14 @@ auto TypeChecker::BuildSubtypeConversion(Nonnull<Expression*> source,
   while (!TypeEqual(cur_class, dest_class, std::nullopt)) {
     const auto src = src_class->declaration().name();
     const auto base_class = cur_class->base();
-    CARBON_CHECK(base_class) << "Invalid subtyping conversion";
+    CARBON_CHECK(base_class, "Invalid subtyping conversion");
     auto* base_expr = arena_->New<BaseAccessExpression>(
         source->source_loc(), last_expr,
         arena_->New<BaseElement>(arena_->New<PointerType>(*base_class)));
     last_expr = base_expr;
     cur_class = *base_class;
   }
-  CARBON_CHECK(last_expr) << "Error, no conversion was needed";
+  CARBON_CHECK(last_expr, "Error, no conversion was needed");
   return last_expr;
 }
 
@@ -758,7 +758,7 @@ auto TypeChecker::BuildBuiltinConversion(Nonnull<Expression*> source,
       return conversion_failed();
   }
 
-  CARBON_FATAL() << "unreachable";
+  CARBON_FATAL("unreachable");
 }
 
 auto TypeChecker::ImplicitlyConvert(std::string_view context,
@@ -892,8 +892,8 @@ auto TypeChecker::IsIntrinsicConstraintSatisfied(
   // TODO: Check to see if this constraint is known in the current impl scope.
   switch (constraint.kind) {
     case IntrinsicConstraint::ImplicitAs:
-      CARBON_CHECK(constraint.arguments.size() == 1)
-          << "wrong number of arguments for `__intrinsic_implicit_as`";
+      CARBON_CHECK(constraint.arguments.size() == 1,
+                   "wrong number of arguments for `__intrinsic_implicit_as`");
       CARBON_ASSIGN_OR_RETURN(
           bool convertible,
           IsBuiltinConversion(source_loc, constraint.type,
@@ -1007,7 +1007,7 @@ auto TypeChecker::ExpectNonPlaceholderType(SourceLocation source_loc,
     return ProgramError(source_loc)
            << "expected `.member_name` after name of " << *namespace_type;
   }
-  CARBON_FATAL() << "unknown kind of placeholder type " << *type;
+  CARBON_FATAL("unknown kind of placeholder type {0}", *type);
 }
 
 // Argument deduction matches two values and attempts to find a set of
@@ -1204,8 +1204,9 @@ auto TypeChecker::ArgumentDeduction::Deduce(Nonnull<const Value*> param,
               return diagnose_missing_field(param_struct, arg_field, false);
             }
           }
-          CARBON_FATAL() << "field count mismatch but no missing field; "
-                         << "duplicate field name?";
+          CARBON_FATAL(
+              "field count mismatch but no missing field; duplicate field "
+              "name?");
         }
       } else {
         for (const auto [param_field, arg_field] :
@@ -1350,7 +1351,7 @@ auto TypeChecker::ArgumentDeduction::Deduce(Nonnull<const Value*> param,
     }
     case Value::Kind::MixinPseudoType:
     case Value::Kind::TypeOfMixinPseudoType:
-      CARBON_CHECK(false) << "Type expression must not contain Mixin types";
+      CARBON_CHECK(false, "Type expression must not contain Mixin types");
   }
 }
 
@@ -1744,8 +1745,7 @@ class TypeChecker::ConstraintTypeBuilder {
       CARBON_ASSIGN_OR_RETURN(
           Nonnull<const Value*> type,
           type_checker.Substitute(local_bindings, intrinsic_constraint.type));
-      IntrinsicConstraint converted = {
-          .type = type, .kind = intrinsic_constraint.kind, .arguments = {}};
+      IntrinsicConstraint converted(type, intrinsic_constraint.kind, {});
       converted.arguments.reserve(intrinsic_constraint.arguments.size());
       for (Nonnull<const Value*> argument : intrinsic_constraint.arguments) {
         CARBON_ASSIGN_OR_RETURN(
@@ -2177,13 +2177,10 @@ class TypeChecker::SubstituteTransform
     const auto* declaration = &witness->declaration();
     if (!IsTemplateSaturated(witness->bindings()) &&
         IsTemplateSaturated(*bindings)) {
-      CARBON_ASSIGN_OR_RETURN(
-          CARBON_PROTECT_COMMAS(auto [new_decl, new_bindings]),
-          type_checker_->InstantiateImplDeclaration(declaration, bindings));
-      declaration = new_decl;
-      bindings = new_bindings;
+      return type_checker_->InstantiateImplDeclaration(declaration, bindings);
+    } else {
+      return type_checker_->arena_->New<ImplWitness>(declaration, bindings);
     }
-    return type_checker_->arena_->New<ImplWitness>(declaration, bindings);
   }
 
   // For an associated constant, look for a rewrite.
@@ -2519,13 +2516,13 @@ auto TypeChecker::DeduceCallBindings(
                            /*allow_implicit_conversion=*/true));
     }
   }
-  CARBON_CHECK(generic_params.empty())
-      << "did not find all generic parameters in parameter list";
+  CARBON_CHECK(generic_params.empty(),
+               "did not find all generic parameters in parameter list");
 
   CARBON_ASSIGN_OR_RETURN(
       std::optional<Bindings> bindings,
       deduction.Finish(*this, impl_scope, /*diagnose_deduction_failure=*/true));
-  CARBON_CHECK(bindings) << "should have diagnosed deduction failure";
+  CARBON_CHECK(bindings, "should have diagnosed deduction failure");
   call.set_bindings(std::move(*bindings));
 
   // Convert the arguments to the deduced and substituted parameter type.
@@ -2737,19 +2734,29 @@ static auto IsInstanceMember(Nonnull<const Element*> element) {
   }
 }
 
-auto TypeChecker::CheckAddrMeAccess(
+auto TypeChecker::CheckAddrSelfAccess(
     Nonnull<MemberAccessExpression*> access,
     Nonnull<const FunctionDeclaration*> func_decl, const Bindings& bindings,
     const ImplScope& impl_scope) -> ErrorOr<Success> {
-  if (func_decl->is_method() &&
-      func_decl->self_pattern().kind() == PatternKind::AddrPattern) {
+  if (!func_decl->is_method()) {
+    return Success();
+  }
+
+  CARBON_ASSIGN_OR_RETURN(
+      Nonnull<const Value*> self_type,
+      Substitute(bindings, &func_decl->self_pattern().static_type()));
+  if (self_type->kind() == Value::Kind::PointerType &&
+      access->object().static_type().kind() != Value::Kind::PointerType) {
+    return ProgramError(access->source_loc())
+           << "method " << *access
+           << " does not match the target function's self pattern (did you "
+              "forget an `addr`?)";
+  }
+  if (func_decl->self_pattern().kind() == PatternKind::AddrPattern) {
     access->set_is_addr_me_method();
-    CARBON_ASSIGN_OR_RETURN(
-        Nonnull<const Value*> me_type,
-        Substitute(bindings, &func_decl->self_pattern().static_type()));
-    CARBON_RETURN_IF_ERROR(
-        ExpectExactType(access->source_loc(), "method access, receiver type",
-                        me_type, &access->object().static_type(), impl_scope));
+    CARBON_RETURN_IF_ERROR(ExpectExactType(
+        access->source_loc(), "method access, receiver type", self_type,
+        &access->object().static_type(), impl_scope));
     if (access->object().expression_category() !=
         ExpressionCategory::Reference) {
       return ProgramError(access->source_loc())
@@ -2785,8 +2792,9 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
     case ExpressionKind::ValueLiteral:
     case ExpressionKind::BuiltinConvertExpression:
     case ExpressionKind::BaseAccessExpression:
-      CARBON_FATAL() << "attempting to type check node " << *e
-                     << " generated during type checking";
+      CARBON_FATAL(
+          "attempting to type check node {0} generated during type checking",
+          *e);
     case ExpressionKind::IndexExpression: {
       auto& index = cast<IndexExpression>(*e);
       CARBON_RETURN_IF_ERROR(TypeCheckExp(&index.object(), impl_scope));
@@ -2920,7 +2928,7 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
                 break;
               case DeclarationKind::FunctionDeclaration: {
                 const auto* func_decl = cast<FunctionDeclaration>(member);
-                CARBON_RETURN_IF_ERROR(CheckAddrMeAccess(
+                CARBON_RETURN_IF_ERROR(CheckAddrSelfAccess(
                     &access, func_decl, t_class.bindings(), impl_scope));
                 if (access.is_type_access()) {
                   access.set_static_type(field_type);
@@ -2937,8 +2945,8 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
                 return ProgramError(access.source_loc())
                        << "Member access to aliases is not yet supported.";
               default:
-                CARBON_FATAL() << "member " << access.member_name()
-                               << " is not a field or method";
+                CARBON_FATAL("member {0} is not a field or method",
+                             access.member_name());
                 break;
             }
             return Success();
@@ -3004,7 +3012,7 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
           if (const auto* func_decl =
                   dyn_cast<FunctionDeclaration>(result.member)) {
             CARBON_RETURN_IF_ERROR(
-                CheckAddrMeAccess(&access, func_decl, bindings, impl_scope));
+                CheckAddrSelfAccess(&access, func_decl, bindings, impl_scope));
             if (access.is_type_access()) {
               access.set_static_type(inst_member_type);
             } else {
@@ -3338,8 +3346,8 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
             // This should not be possible: the name of a static member
             // function should have function type not member name type.
             CARBON_CHECK(!has_instance || is_instance_member ||
-                         !member_name.base_type().has_value())
-                << "vacuous compound member access";
+                             !member_name.base_type().has_value(),
+                         "vacuous compound member access");
             // If this is instance access, remove self bound from function type
             if (has_instance && is_instance_member) {
               CARBON_RETURN_IF_ERROR(set_static_type_remove_self());
@@ -3348,8 +3356,8 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
             }
             access.set_expression_category(ExpressionCategory::Value);
             CARBON_RETURN_IF_ERROR(
-                CheckAddrMeAccess(&access, cast<FunctionDeclaration>(*decl),
-                                  bindings_for_member(), impl_scope));
+                CheckAddrSelfAccess(&access, cast<FunctionDeclaration>(*decl),
+                                    bindings_for_member(), impl_scope));
             return Success();
           }
           break;
@@ -3359,8 +3367,7 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
           access.set_expression_category(access.object().expression_category());
           return Success();
         default:
-          CARBON_FATAL() << "member " << member_name
-                         << " is not a field or method";
+          CARBON_FATAL("member {0} is not a field or method", member_name);
           break;
       }
 
@@ -3668,10 +3675,11 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
 
           // Currently the only kinds of parameterized entities we support are
           // types.
-          CARBON_CHECK(
-              isa<ClassDeclaration, InterfaceDeclaration, ConstraintDeclaration,
-                  ChoiceDeclaration>(param_name.declaration()))
-              << "unknown type of ParameterizedEntityName for " << param_name;
+          CARBON_CHECK((isa<ClassDeclaration, InterfaceDeclaration,
+                            ConstraintDeclaration, ChoiceDeclaration>(
+                           param_name.declaration())),
+                       "unknown type of ParameterizedEntityName for {0}",
+                       param_name);
           call.set_static_type(arena_->New<TypeType>());
           call.set_expression_category(ExpressionCategory::Value);
           return Success();
@@ -4103,13 +4111,13 @@ auto TypeChecker::TypeCheckExpImpl(Nonnull<Expression*> e,
       return Success();
     }
     case ExpressionKind::UnimplementedExpression:
-      CARBON_FATAL() << "Unimplemented: " << *e;
+      CARBON_FATAL("Unimplemented: {0}", *e);
     case ExpressionKind::ArrayTypeLiteral: {
       auto& array_literal = cast<ArrayTypeLiteral>(*e);
       CARBON_ASSIGN_OR_RETURN(
           Nonnull<const Value*> element_type,
-          TypeCheckTypeExp(&array_literal.element_type_expression(),
-                           impl_scope));
+          TypeCheckTypeExp(&array_literal.element_type_expression(), impl_scope,
+                           false));
       std::optional<size_t> array_size;
       if (array_literal.has_size_expression()) {
         CARBON_RETURN_IF_ERROR(
@@ -4194,18 +4202,18 @@ auto TypeChecker::TypeCheckTypeExp(Nonnull<Expression*> type_expression,
                         arena_->New<TypeType>()));
   CARBON_ASSIGN_OR_RETURN(Nonnull<const Value*> type,
                           InterpExp(type_expression));
-  CARBON_CHECK(IsType(type))
-      << "type expression did not produce a type, got " << *type;
+  CARBON_CHECK(IsType(type), "type expression did not produce a type, got {0}",
+               *type);
   if (concrete) {
     if (TypeIsDeduceable(type)) {
       return ProgramError(type_expression->source_loc())
              << "`auto` is not permitted in this context";
     }
-    CARBON_CHECK(IsNonDeduceableType(type))
-        << "unknown kind of non-concrete type " << *type;
+    CARBON_CHECK(IsNonDeduceableType(type),
+                 "unknown kind of non-concrete type {0}", *type);
   }
-  CARBON_CHECK(!IsPlaceholderType(type))
-      << "should be no way to write a placeholder type";
+  CARBON_CHECK(!IsPlaceholderType(type),
+               "should be no way to write a placeholder type");
   return type;
 }
 
@@ -4319,13 +4327,14 @@ auto TypeChecker::TypeCheckPattern(
                               arena_->New<TypeType>()));
         CARBON_ASSIGN_OR_RETURN(type, InterpExp(converted));
       }
-      CARBON_CHECK(IsType(type))
-          << "conversion to type succeeded but didn't produce a type, got "
-          << *type;
+      CARBON_CHECK(
+          IsType(type),
+          "conversion to type succeeded but didn't produce a type, got {0}",
+          *type);
       if (expected) {
         // TODO: Per proposal #2188, we should be performing conversions at
         // this level rather than on the overall initializer.
-        if (!IsNonDeduceableType(type)) {
+        if (TypeIsDeduceable(type)) {
           BindingMap generic_args;
           if (!PatternMatch(type, ExpressionResult::Value(*expected),
                             binding.type().source_loc(), std::nullopt,
@@ -4335,24 +4344,18 @@ auto TypeChecker::TypeCheckPattern(
                    << "' does not match actual type '" << **expected << "'";
           }
 
-          if (type->kind() == Value::Kind::StaticArrayType) {
-            const auto& arr = cast<StaticArrayType>(*type);
-            CARBON_CHECK(!arr.has_size());
-            const size_t size = GetSize(*expected);
-            type = arena_->New<StaticArrayType>(&arr.element_type(), size);
-          } else {
-            type = *expected;
-          }
+          type = DeducePatternType(type, *expected, arena_);
         }
+
       } else {
         CARBON_RETURN_IF_ERROR(ExpectResolvedBindingType(binding, type));
       }
 
-      CARBON_CHECK(IsNonDeduceableType(type))
-          << "did not resolve " << binding << " to concrete type, got "
-          << *type;
-      CARBON_CHECK(!IsPlaceholderType(type))
-          << "should be no way to write a placeholder type";
+      CARBON_CHECK(IsNonDeduceableType(type),
+                   "did not resolve {0} to concrete type, got {1}", binding,
+                   *type);
+      CARBON_CHECK(!IsPlaceholderType(type),
+                   "should be no way to write a placeholder type");
       binding.set_static_type(type);
       binding.set_value(binding.name() != AnonymousName
                             ? arena_->New<BindingPlaceholderValue>(&binding)
@@ -4897,7 +4900,7 @@ auto TypeChecker::DeclareCallableDeclaration(Nonnull<CallableDeclaration*> f,
                                              const ScopeInfo& scope_info)
     -> ErrorOr<Success> {
   const auto name = GetName(*f);
-  CARBON_CHECK(name) << "Unexpected missing name for `" << *f << "`.";
+  CARBON_CHECK(name, "Unexpected missing name for `{0}`.", *f);
   if (trace_stream_->is_enabled()) {
     trace_stream_->Start() << "declaring function `" << *name << "` ("
                            << f->source_loc() << ")\n";
@@ -4997,7 +5000,7 @@ auto TypeChecker::DeclareCallableDeclaration(Nonnull<CallableDeclaration*> f,
           arena_->New<DestructorValue>(cast<DestructorDeclaration>(f)));
       break;
     default:
-      CARBON_FATAL() << "f is not a callable declaration";
+      CARBON_FATAL("f is not a callable declaration");
   }
 
   if (name == "Main") {
@@ -5027,7 +5030,7 @@ auto TypeChecker::TypeCheckCallableDeclaration(Nonnull<CallableDeclaration*> f,
                                                const ImplScope& impl_scope)
     -> ErrorOr<Success> {
   auto name = GetName(*f);
-  CARBON_CHECK(name) << "Unexpected missing name for `" << *f << "`.";
+  CARBON_CHECK(name, "Unexpected missing name for `{0}`.", *f);
   if (trace_stream_->is_enabled()) {
     trace_stream_->Start() << "checking function `" << *name << "` ("
                            << f->source_loc() << ")\n";
@@ -5165,18 +5168,29 @@ auto TypeChecker::DeclareClassDeclaration(Nonnull<ClassDeclaration*> class_decl,
              << "Error declaring `" << fun->name() << "`"
              << ": class functions cannot be virtual.";
     }
-    CARBON_CHECK(!fun->name().is_qualified())
-        << "qualified function name not permitted in class scope";
+    CARBON_CHECK(!fun->name().is_qualified(),
+                 "qualified function name not permitted in class scope");
+
+    if (fun->virt_override() == VirtualOverride::Abstract &&
+        fun->body().has_value()) {
+      return ProgramError(fun->source_loc())
+             << "Error declaring `" << fun->name() << "`"
+             << ": abstract method cannot have a body.";
+    }
+
     bool has_vtable_entry =
         class_vtable.find(fun->name().inner_name()) != class_vtable.end();
     // TODO: Implement complete declaration logic from
     // `/docs/design/classes.md#virtual-methods`.
     switch (fun->virt_override()) {
       case VirtualOverride::Abstract:
-        // Not supported yet.
-        return ProgramError(fun->source_loc())
-               << "Error declaring `" << fun->name() << "`"
-               << ": `abstract` methods are not yet supported.";
+        if (class_decl->extensibility() != ClassExtensibility::Abstract) {
+          return ProgramError(fun->source_loc())
+                 << "Error declaring `" << fun->name() << "`"
+                 << ": `abstract` methods are allowed only in abstract "
+                    "classes.";
+        }
+        break;
       case VirtualOverride::None:
       case VirtualOverride::Virtual:
         if (has_vtable_entry) {
@@ -5237,6 +5251,24 @@ auto TypeChecker::DeclareClassDeclaration(Nonnull<ClassDeclaration*> class_decl,
     }
   }
 
+  if (class_decl->extensibility() != ClassExtensibility::Abstract) {
+    auto abstract_method_it = std::find_if(
+        class_vtable.begin(), class_vtable.end(), [](const auto& vt) {
+          const auto* const fun = vt.getValue().first;
+          return fun->is_method() &&
+                 fun->virt_override() == VirtualOverride::Abstract;
+        });
+
+    if (abstract_method_it != class_vtable.end()) {
+      auto fun_name = GetName(*abstract_method_it->getValue().first);
+      CARBON_CHECK(fun_name.has_value());
+      return ProgramError(class_decl->source_loc())
+             << "Error declaring `" << class_decl->name() << "`"
+             << ": non abstract class should implement abstract method `"
+             << *fun_name << "`.";
+    }
+  }
+
   // For class declaration `class MyType(T:! type, U:! AnInterface)`, `Self`
   // should have the value `MyType(T, U)`.
   const auto* self_type = arena_->New<NominalClassType>(
@@ -5283,8 +5315,8 @@ auto TypeChecker::TypeCheckClassDeclaration(
   }
   auto [it, inserted] =
       collected_members_.insert({class_decl, CollectedMembersMap()});
-  CARBON_CHECK(inserted) << "Adding class " << class_decl->name()
-                         << " to collected_members_ must not fail";
+  CARBON_CHECK(inserted, "Adding class {0} to collected_members_ must not fail",
+               class_decl->name());
   for (Nonnull<Declaration*> m : class_decl->members()) {
     CARBON_RETURN_IF_ERROR(TypeCheckDeclaration(m, class_scope, class_decl));
     CARBON_RETURN_IF_ERROR(CollectMember(class_decl, m));
@@ -5430,8 +5462,8 @@ auto TypeChecker::DeclareConstraintTypeDeclaration(
     Nonnull<ConstraintTypeDeclaration*> constraint_decl,
     const ScopeInfo& scope_info) -> ErrorOr<Success> {
   CARBON_CHECK(
-      isa<InterfaceDeclaration, ConstraintDeclaration>(constraint_decl))
-      << "unexpected kind of constraint type declaration";
+      (isa<InterfaceDeclaration, ConstraintDeclaration>(constraint_decl)),
+      "unexpected kind of constraint type declaration");
   bool is_interface = isa<InterfaceDeclaration>(constraint_decl);
 
   if (trace_stream_->is_enabled()) {
@@ -5606,9 +5638,8 @@ auto TypeChecker::DeclareConstraintTypeDeclaration(
       }
 
       default: {
-        CARBON_FATAL()
-            << "unexpected declaration in constraint type declaration:\n"
-            << *m;
+        CARBON_FATAL(
+            "unexpected declaration in constraint type declaration:\n{0}", *m);
         break;
       }
     }
@@ -5699,7 +5730,7 @@ auto TypeChecker::CheckImplIsComplete(Nonnull<const InterfaceType*> iface_type,
     } else {
       // Every member function must be declared.
       std::optional<std::string_view> mem_name = GetName(*m);
-      CARBON_CHECK(mem_name.has_value()) << "unnamed interface member " << *m;
+      CARBON_CHECK(mem_name.has_value(), "unnamed interface member {0}", *m);
 
       std::optional<Nonnull<const Declaration*>> mem =
           FindMember(*mem_name, impl_decl->members());
@@ -5806,6 +5837,11 @@ auto TypeChecker::DeclareImplDeclaration(Nonnull<ImplDeclaration*> impl_decl,
                            << impl_decl->source_loc() << ")\n";
   }
 
+  // We need to eagerly typecheck portions of the impl in terms of the generic
+  // parameters, and then typecheck it again at instantiation time in terms of
+  // the actual arguments. The AST doesn't allow type information to be mutated,
+  // So in order to do that, we need to preserve a clone that doesn't have type
+  // information attached.
   if (!IsTemplateSaturated(impl_decl->deduced_parameters())) {
     CloneContext context(arena_);
     TemplateInfo template_info = {.pattern = context.Clone(impl_decl)};
@@ -6095,11 +6131,11 @@ static auto IsValidTypeForAliasTarget(Nonnull<const Value*> type) -> bool {
     case Value::Kind::AlternativeConstructorValue:
     case Value::Kind::StringValue:
     case Value::Kind::UninitializedValue:
-      CARBON_FATAL() << "type of alias target is not a type: " << *type;
+      CARBON_FATAL("type of alias target is not a type: {0}", *type);
 
     case Value::Kind::AutoType:
     case Value::Kind::VariableType:
-      CARBON_FATAL() << "pattern type in alias target: " << *type;
+      CARBON_FATAL("pattern type in alias target: {0}", *type);
 
     case Value::Kind::IntType:
     case Value::Kind::BoolType:
@@ -6257,7 +6293,7 @@ auto TypeChecker::TypeCheckDeclaration(
       break;
     }
     case DeclarationKind::SelfDeclaration: {
-      CARBON_FATAL() << "Unreachable TypeChecker `Self` declaration";
+      CARBON_FATAL("Unreachable TypeChecker `Self` declaration");
     }
     case DeclarationKind::AliasDeclaration: {
       break;
@@ -6384,7 +6420,7 @@ auto TypeChecker::DeclareDeclaration(Nonnull<Declaration*> d,
     }
 
     case DeclarationKind::SelfDeclaration: {
-      CARBON_FATAL() << "Unreachable TypeChecker declare `Self` declaration";
+      CARBON_FATAL("Unreachable TypeChecker declare `Self` declaration");
     }
 
     case DeclarationKind::AliasDeclaration: {
@@ -6456,8 +6492,8 @@ auto TypeChecker::CollectMember(Nonnull<const Declaration*> enclosing_decl,
                                 Nonnull<const Declaration*> member_decl)
     -> ErrorOr<Success> {
   CARBON_CHECK(isa<MixinDeclaration>(enclosing_decl) ||
-               isa<ClassDeclaration>(enclosing_decl))
-      << "Can't collect members for " << *enclosing_decl;
+                   isa<ClassDeclaration>(enclosing_decl),
+               "Can't collect members for {0}", *enclosing_decl);
   auto member_name = GetName(*member_decl);
   if (!member_name.has_value()) {
     // No need to collect members without a name
@@ -6498,30 +6534,36 @@ auto TypeChecker::FindCollectedMembers(Nonnull<const Declaration*> decl)
       return it->second;
     }
     default:
-      CARBON_FATAL() << "Can't collect members for " << *decl;
+      CARBON_FATAL("Can't collect members for {0}", *decl);
   }
 }
 
 auto TypeChecker::InstantiateImplDeclaration(
-    Nonnull<const ImplDeclaration*> old_impl,
+    Nonnull<const ImplDeclaration*> pattern,
     Nonnull<const Bindings*> bindings) const
-    -> ErrorOr<std::pair<Nonnull<ImplDeclaration*>, Nonnull<Bindings*>>> {
+    -> ErrorOr<Nonnull<const ImplWitness*>> {
   CARBON_CHECK(IsTemplateSaturated(*bindings));
 
   if (trace_stream_->is_enabled()) {
-    trace_stream_->Start() << "instantiating `" << PrintAsID(*old_impl) << "` ("
-                           << old_impl->source_loc() << ")\n";
+    trace_stream_->Start() << "instantiating `" << PrintAsID(*pattern) << "` ("
+                           << pattern->source_loc() << ")\n";
     *trace_stream_ << *bindings << "\n";
   }
 
-  SetFileContext set_file_context(*trace_stream_, old_impl->source_loc());
+  SetFileContext set_file_context(*trace_stream_, pattern->source_loc());
 
-  auto it = templates_.find(old_impl);
+  auto it = templates_.find(pattern);
   CARBON_CHECK(it != templates_.end());
   const TemplateInfo& info = it->second;
 
-  // TODO: Only instantiate each declaration once for each set of template
-  // arguments.
+  if (auto instantiation = info.instantiations.find(bindings);
+      instantiation != info.instantiations.end()) {
+    if (trace_stream_->is_enabled()) {
+      *trace_stream_ << "reusing cached instantiation\n";
+    }
+    return instantiation->second;
+  }
+
   CloneContext context(arena_);
   Nonnull<ImplDeclaration*> impl =
       context.Clone(cast<ImplDeclaration>(info.pattern));
@@ -6545,8 +6587,8 @@ auto TypeChecker::InstantiateImplDeclaration(
         std::optional<Nonnull<const Value*>> witness;
         if (auto impl = param->impl_binding()) {
           auto it = bindings->witnesses().find(*impl);
-          CARBON_CHECK(it != bindings->witnesses().end())
-              << "no witness for generic binding";
+          CARBON_CHECK(it != bindings->witnesses().end(),
+                       "no witness for generic binding");
           witness = it->second;
         }
         new_bindings.Add(clone, value, witness);
@@ -6564,8 +6606,8 @@ auto TypeChecker::InstantiateImplDeclaration(
   // TODO: It's probably not correct to use the top-level impl scope here. It's
   // not obvious what we should use, though -- which impls are in scope in
   // template instantiation?
-  CARBON_CHECK(top_level_impl_scope_)
-      << "can't perform template instantiation with no top-level scope";
+  CARBON_CHECK(top_level_impl_scope_,
+               "can't perform template instantiation with no top-level scope");
   ImplScope scope(*top_level_impl_scope_);
 
   // Bring all impls from any checked generic bindings in the template
@@ -6606,7 +6648,10 @@ auto TypeChecker::InstantiateImplDeclaration(
       /*is_template_instantiation=*/true));
   CARBON_RETURN_IF_ERROR(type_checker->TypeCheckImplDeclaration(impl, scope));
 
-  return std::pair{impl, arena_->New<Bindings>(std::move(new_bindings))};
+  auto* result = arena_->New<ImplWitness>(
+      impl, arena_->New<Bindings>(std::move(new_bindings)));
+  CARBON_CHECK(info.instantiations.insert({bindings, result}).second);
+  return result;
 }
 
 auto TypeChecker::InterpExp(Nonnull<const Expression*> e)

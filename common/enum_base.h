@@ -21,10 +21,6 @@ namespace Carbon::Internal {
 // It is specifically designed to compose with X-MACRO style `.def` files that
 // stamp out all the enumerators.
 //
-// It also supports some opt-in APIs that classes can enable by `using` the
-// names to make them public: `AsInt` and `FromInt` allow converting to and from
-// the underlying type of the enumerator.
-//
 // Users must be in the `Carbon` namespace and should look like the following.
 //
 // In `my_kind.h`:
@@ -36,8 +32,19 @@ namespace Carbon::Internal {
 //
 //   class MyKind : public CARBON_ENUM_BASE(MyKind) {
 //    public:
-//   #define CARBON_MY_KIND(Name) CARBON_ENUM_CONSTANT_DECLARATION(Name)
+//   #define CARBON_MY_KIND(Name) CARBON_ENUM_CONSTANT_DECL(Name)
 //   #include ".../my_kind.def"
+//
+//     // OPTIONAL: To support converting to and from the underlying type of
+//     // the enumerator, add these lines:
+//     using EnumBase::AsInt;
+//     using EnumBase::FromInt;
+//
+//     // OPTIONAL: To expose the ability to create an instance from the raw
+//     // enumerator (for unusual use cases), add this:
+//     using EnumBase::Make;
+//
+//     // Plus, anything else you wish to include.
 //   };
 //
 //   #define CARBON_MY_KIND(Name) CARBON_ENUM_CONSTANT_DEFINITION(MyKind, Name)
@@ -51,8 +58,56 @@ namespace Carbon::Internal {
 //   #include ".../my_kind.def"
 //   };
 //   ```
+//
+// The result of the above:
+// - An enum class (`RawEnumType`) defined in an `Internal` namespace with one
+//   enumerator per call to CARBON_MY_KIND(Name) in `.../my_kind.def`, with name
+//   `Name`. This won't generally be used directly, but may be needed for niche
+//   use cases such as a template argument.
+// - A type `MyKind` that extends `Carbon::Internal::EnumBase`.
+//   - `MyKind` includes all the public members of `EnumBase`, like `name` and
+//     `Print`. For example, you might call `name()` to construct an error
+//     message:
+//     ```
+//     auto ErrorMessage(MyKind k) -> std::string {
+//       return k.name() + " not found";
+//     }
+//     ```
+//   - `MyKind` includes all protected members of `EnumBase`, like `AsInt`,
+//     `FromInt`. They will be part of the public API of `EnumBase` if they
+//     were included in a `using` declaration.
+//   - `MyKind` includes a member `static const MyKind Name;` per call to
+//     `CARBON_MY_KIND(Name)` in `.../my_kind.def`. It will have the
+//     corresponding value from `RawEnumType`. This is the primary way to create
+//     an instance of `MyKind`. For example, it might be used like:
+//     ```
+//     ErrorMessage(MyKind::Name1);
+//     ```
+//   - `MyKind` includes an implicit conversion to the `RawEnumType`, returning
+//     the value of a private field in `EnumBase`. This is used when writing a
+//     `switch` statement, as in this example:
+//     ```
+//     auto MyFunction(MyKind k) -> void {
+//       // Implicitly converts `k` and every `case` expression to
+//       // `RawEnumType`:
+//       switch (k) {
+//         case MyKind::Name1:
+//           // ...
+//           break;
+//
+//         case MyKind::Name2:
+//           // ...
+//           break;
+//
+//         // No `default` case needed if the above cases are exhaustive.
+//         // Prefer no `default` case when possible, to get an error if
+//         // a case is skipped.
+//       }
+//     }
+//     ```
+//
 template <typename DerivedT, typename EnumT, const llvm::StringLiteral Names[]>
-class EnumBase {
+class EnumBase : public Printable<DerivedT> {
  public:
   // An alias for the raw enum type. This is an implementation detail and
   // should rarely be used directly, only when an actual enum type is needed.
@@ -78,28 +133,20 @@ class EnumBase {
   // This method will be automatically defined using the static `names` string
   // table in the base class, which is in turn will be populated for each
   // derived type using the macro helpers in this file.
-  [[nodiscard]] auto name() const -> llvm::StringRef { return Names[AsInt()]; }
+  auto name() const -> llvm::StringRef { return Names[AsInt()]; }
 
   // Prints this value using its name.
   auto Print(llvm::raw_ostream& out) const -> void { out << name(); }
 
-  // TODO: common/ostream.h tries to provide this, but does not reliably work on
-  // EnumBase children. Try to find a more generic solution.
-  friend auto operator<<(llvm::raw_ostream& out, const DerivedT& obj)
-      -> llvm::raw_ostream& {
-    obj.Print(out);
-    return out;
-  }
-
  protected:
   // The default constructor is explicitly defaulted (and constexpr) as a
   // protected constructor to allow derived classes to be constructed but not
-  // the base itself. This should only be used in the `Create` function below.
+  // the base itself. This should only be used in the `Make` function below.
   constexpr EnumBase() = default;
 
   // Create an instance from the raw enumerator. Mainly used internally, but may
   // be exposed for unusual use cases.
-  static constexpr auto Create(RawEnumType value) -> EnumType {
+  static constexpr auto Make(RawEnumType value) -> EnumType {
     EnumType result;
     result.value_ = value;
     return result;
@@ -114,7 +161,7 @@ class EnumBase {
   // Convert from the underlying integer type. Derived types can choose to
   // expose this as part of their API.
   static constexpr auto FromInt(UnderlyingType value) -> EnumType {
-    return Create(static_cast<RawEnumType>(value));
+    return Make(static_cast<RawEnumType>(value));
   }
 
  private:
@@ -126,7 +173,6 @@ class EnumBase {
 // For use when multiple enums use the same list of names.
 #define CARBON_DEFINE_RAW_ENUM_CLASS_NO_NAMES(EnumClassName, UnderlyingType) \
   namespace Internal {                                                       \
-  /* NOLINTNEXTLINE(bugprone-macro-parentheses) */                           \
   enum class EnumClassName##RawEnum : UnderlyingType;                        \
   }                                                                          \
   enum class Internal::EnumClassName##RawEnum : UnderlyingType
@@ -158,13 +204,13 @@ class EnumBase {
 
 // Use this within the Carbon enum class body to generate named constant
 // declarations for each value.
-#define CARBON_ENUM_CONSTANT_DECLARATION(Name) static const EnumType Name;
+#define CARBON_ENUM_CONSTANT_DECL(Name) static const EnumType Name;
 
 // Use this immediately after the Carbon enum class body to define each named
 // constant.
 #define CARBON_ENUM_CONSTANT_DEFINITION(EnumClassName, Name) \
   constexpr EnumClassName EnumClassName::Name =              \
-      EnumClassName::Create(RawEnumType::Name);
+      EnumClassName::Make(RawEnumType::Name);
 
 // Alternatively, use this within the Carbon enum class body to declare and
 // define each named constant. Due to type completeness constraints, this will
@@ -174,7 +220,7 @@ class EnumBase {
 // `EnumBase` base class.
 #define CARBON_INLINE_ENUM_CONSTANT_DEFINITION(Name)     \
   static constexpr const typename Base::EnumType& Name = \
-      Base::Create(Base::RawEnumType::Name);
+      Base::Make(Base::RawEnumType::Name);
 
 // Use this in the `.cpp` file for an enum class to start the definition of the
 // constant names array for each enumerator. It is followed by the desired

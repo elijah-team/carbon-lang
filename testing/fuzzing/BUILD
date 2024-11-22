@@ -18,6 +18,14 @@ cc_proto_library(
     deps = [":carbon_proto"],
 )
 
+# Header for LibFuzzer, does not provide the implementation which should come
+# from some other source such as a fuzz test target.
+cc_library(
+    name = "libfuzzer_header",
+    testonly = 1,
+    hdrs = ["libfuzzer.h"],
+)
+
 cc_library(
     name = "proto_to_carbon_lib",
     testonly = 1,
@@ -26,8 +34,8 @@ cc_library(
     deps = [
         ":carbon_cc_proto",
         "//common:error",
-        "@com_google_protobuf//:protobuf_headers",
         "@llvm-project//llvm:Support",
+        "@protobuf//:protobuf_headers",
     ],
 )
 
@@ -40,19 +48,20 @@ cc_binary(
         ":proto_to_carbon_lib",
         "//common:bazel_working_dir",
         "//common:error",
-        "@com_google_protobuf//:protobuf_headers",
         "@llvm-project//llvm:Support",
+        "@protobuf//:protobuf_headers",
     ],
 )
 
 cc_test(
     name = "proto_to_carbon_test",
+    size = "small",
     srcs = ["proto_to_carbon_test.cpp"],
     deps = [
         ":carbon_cc_proto",
         ":proto_to_carbon_lib",
         "//common:error",
         "//testing/base:gtest_main",
-        "@com_google_googletest//:gtest",
+        "@googletest//:gtest",
     ],
 )

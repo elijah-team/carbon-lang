@@ -79,7 +79,7 @@ class Pattern : public AstNode {
   // Sets the value of this pattern. Can only be called once, during
   // typechecking.
   void set_value(Nonnull<const Value*> value) {
-    CARBON_CHECK(!value_) << "set_value called more than once";
+    CARBON_CHECK(!value_, "set_value called more than once");
     value_ = value;
   }
 
@@ -115,7 +115,7 @@ auto VisitNestedPatterns(const Pattern& pattern,
 inline auto VisitNestedPatterns(Pattern& pattern,
                                 llvm::function_ref<bool(Pattern&)> visitor)
     -> bool {
-  // The non-const version is is implemented in terms of the const version. The
+  // The non-const version is implemented in terms of the const version. The
   // const_cast is safe because every pattern reachable through a non-const
   // pattern is also non-const.
   const Pattern& const_pattern = pattern;
@@ -307,7 +307,7 @@ class GenericBinding : public Pattern {
 
   // Set the index of this binding. Should be called only during type-checking.
   void set_index(int index) {
-    CARBON_CHECK(!index_) << "should only set depth and index once";
+    CARBON_CHECK(!index_, "should only set depth and index once");
     index_ = index;
   }
 

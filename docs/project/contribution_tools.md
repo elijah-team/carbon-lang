@@ -15,6 +15,8 @@ contributions.
 
 -   [Setup commands](#setup-commands)
     -   [Debian or Ubuntu](#debian-or-ubuntu)
+        -   [Installing Bazelisk](#installing-bazelisk)
+        -   [Old `clang` versions](#old-clang-versions)
     -   [macOS](#macos)
 -   [Tools](#tools)
     -   [Main tools](#main-tools)
@@ -22,9 +24,13 @@ contributions.
     -   [Optional tools](#optional-tools)
     -   [Manually building Clang and LLVM (not recommended)](#manually-building-clang-and-llvm-not-recommended)
 -   [Troubleshooting build issues](#troubleshooting-build-issues)
+    -   [`bazel clean`](#bazel-clean)
     -   [Old LLVM versions](#old-llvm-versions)
     -   [Asking for help](#asking-for-help)
 -   [Troubleshooting debug issues](#troubleshooting-debug-issues)
+    -   [Debugging with GDB instead of LLDB](#debugging-with-gdb-instead-of-lldb)
+    -   [Disabling split debug info](#disabling-split-debug-info)
+    -   [Debugging other build modes](#debugging-other-build-modes)
     -   [Debugging on MacOS](#debugging-on-macos)
 
 <!-- tocstop -->
@@ -38,22 +44,27 @@ These commands should help set up a development environment on your machine.
 
 ### Debian or Ubuntu
 
-```
+```shell
 # Update apt.
 sudo apt update
 
+# Check that the `clang` version is at least 16, our minimum version. That needs
+# the number of the `:` in the output to be over 16. For example, `1:16.0-57`.
+apt-cache show clang | grep 'Version:'
+
 # Install tools.
 sudo apt install \
-  bazel \
   clang \
   gh \
   libc++-dev \
+  libc++abi-dev \
   lld \
+  lldb \
   python3 \
-  zlib1g-dev
+  pipx
 
 # Install pre-commit.
-pip3 install pre-commit
+pipx install pre-commit
 
 # Set up git.
 # If you don't already have a fork:
@@ -62,16 +73,44 @@ cd carbon-lang
 pre-commit install
 
 # Run tests.
-bazel test //...:all
+./scripts/run_bazelisk.py test //...:all
 ```
 
-> NOTE: Most LLVM 14+ installs should build Carbon. If you're having issues, see
+#### Installing Bazelisk
+
+Although the `run_bazelisk` script can make it easy to get started, if you're
+frequently building Carbon, it can be a bit much to type. Consider either
+aliasing `bazel` to the `run_bazelisk.py` script, or
+[downloading a bazelisk release](https://github.com/bazelbuild/bazelisk) and
+adding it to your `$PATH`.
+
+#### Old `clang` versions
+
+If the version of `clang` is earlier than 16, you may still have version 16
+available. You can use the following install instead:
+
+```shell
+# Install explicitly versioned Clang tools.
+sudo apt install \
+  clang-16 \
+  libc++-16-dev \
+  libc++abi-16-dev \
+  lld-16 \
+  lldb-16
+
+# In your Carbon checkout, tell Bazel where to find `clang`. You can also
+# export this path as the `CC` environment variable, or add it directly to
+# your `PATH`.
+echo "build --repo_env=CC=$(readlink -f $(which clang-16))" >> user.bazelrc
+```
+
+> NOTE: Most LLVM 16+ installs should build Carbon. If you're having issues, see
 > [troubleshooting build issues](#troubleshooting-build-issues).
 
 ### macOS
 
-```
-# Install Hombrew.
+```shell
+# Install Homebrew.
 /bin/bash -c "$(curl -fsSL \
   https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
@@ -82,12 +121,10 @@ brew install \
   bazelisk \
   gh \
   llvm \
-  python@3.10
+  python@3.10 \
+  pre-commit
 
 # IMPORTANT: Make sure `llvm` is added to the PATH! It's separate from `brew`.
-
-# Install pre-commit.
-pip3 install pre-commit
 
 # Set up git.
 gh repo fork --clone carbon-language/carbon-lang
@@ -131,10 +168,8 @@ These tools are essential for work on Carbon.
             outdated, and not be upgraded.
 -   Main tools
     -   [Bazel](https://www.bazel.build/)
-        -   NOTE: See [the bazelisk config](/.bazeliskrc) for a supported
-            version.
-    -   [Bazelisk](https://docs.bazel.build/versions/master/install-bazelisk.html)
-        (for macOS): Handles Bazel versions.
+        -   [Bazelisk](https://docs.bazel.build/versions/master/install-bazelisk.html):
+            Downloads and runs the [configured Bazel version](/.bazeliskrc).
     -   [Clang](https://clang.llvm.org/) and [LLVM](https://llvm.org/)
         -   NOTE: Most LLVM 14+ installs should build Carbon. If you're having
             issues, see
@@ -142,8 +177,6 @@ These tools are essential for work on Carbon.
     -   [gh CLI](https://github.com/cli/cli): Helps with GitHub.
     -   [pre-commit](https://pre-commit.com): Validates and cleans up git
         commits.
--   Libraries
-    -   zlib1g-dev: Used as a library, but not installed on all Linux systems.
 
 #### Running pre-commit
 
@@ -196,6 +229,15 @@ considering if they fit your workflow.
             you should be prompted to use Carbon's
             [devcontainer](/.devcontainer/devcontainer.json) with "Reopen in
             container".
+-   [clangd](https://clangd.llvm.org/installation): An LSP server implementation
+    for C/C++.
+    -   To ensure that `clangd` reports accurate diagnostics. It needs a
+        generated file called `compile_commands.json`. This can be generated by
+        invoking the command below:
+        ```
+        ./scripts/create_compdb.py
+        ```
+        -   **NOTE**: This assumes you have `python` 3 installed on your system.
 
 ### Manually building Clang and LLVM (not recommended)
 
@@ -212,19 +254,24 @@ work reliably include:
 
 ## Troubleshooting build issues
 
+### `bazel clean`
+
+Changes to packages installed on your system may not be noticed by `bazel`. This
+includes things such as changing LLVM versions, or installing libc++. Running
+`bazel clean` should force cached state to be rebuilt.
+
 ### Old LLVM versions
 
 Many build issues result from the particular options `clang` and `llvm` have
 been built with, particularly when it comes to system-installed versions. If you
-run `clang --version`, you should see at least version 14. If you see an older
-version, please update.
+run `clang --version`, you should see at least version 16. If you see an older
+version, please update, or use the special `clang-16` instructions above.
 
 System installs of macOS typically won't work, for example being an old LLVM
 version or missing llvm-ar; [setup commands](#setup-commands) includes LLVM from
 Homebrew for this reason.
 
-It may be necessary to run `bazel clean` after updating versions in order to
-clean up cached state.
+Run [`bazel clean`](#bazel-clean) when changing the installed LLVM version.
 
 ### Asking for help
 
@@ -235,8 +282,9 @@ providing the output of the following diagnostic commands:
 ```shell
 echo $CC
 which clang
+which clang-16
 clang --version
-grep llvm_bindir $(bazel info workspace)/bazel-execroot/external/bazel_cc_toolchain/clang_detected_variables.bzl
+grep llvm_bindir $(bazel info workspace)/bazel-execroot/external/_main\~clang_toolchain_extension\~bazel_cc_toolchain/clang_detected_variables.bzl
 
 # If on macOS:
 brew --prefix llvm
@@ -251,17 +299,35 @@ Pass `-c dbg` to `bazel build` in order to compile with debugging enabled. For
 example:
 
 ```shell
-bazel build -c dbg //explorer
+bazel build -c dbg //toolchain
 ```
 
-Then debugging works with GDB:
+Then debugging works with LLDB:
 
 ```shell
-gdb bazel-bin/explorer/explorer
+lldb bazel-bin/toolchain/install/prefix_root/lib/carbon/carbon-busybox
 ```
 
-Note that LLVM uses DWARF v5 debug symbols, which means that GDB version 10.1 or
-newer is required. If you see an error like this:
+Any installed version of LLDB at least as recent as the installed Clang used for
+building should work.
+
+### Debugging with GDB instead of LLDB
+
+If you prefer using GDB, you may want to pass some extra flags to the build:
+
+```shell
+bazel build -c dbg --features=-lldb_flags --features=gdb_flags //toolchain
+```
+
+Or you can add them to your `user.bazelrc`, they are designed to be safe to pass
+at all times and only have effect when building with debug information:
+
+```shell
+echo "build --features=-lldb_flags --features=gdb_flags" >> user.bazelrc
+```
+
+Note that on Linux we use Split DWARF and DWARF v5 debug symbols, which means
+that GDB version 10.1 or newer is required. If you see an error like this:
 
 ```shell
 Dwarf Error: DW_FORM_strx1 found in non-DWO CU
@@ -269,6 +335,19 @@ Dwarf Error: DW_FORM_strx1 found in non-DWO CU
 
 It means that the version of GDB used is too old, and does not support the DWARF
 v5 format.
+
+### Disabling split debug info
+
+Our build uses split debug info by default on Linux to improve build and
+debugger performance and reduce the size impact of debug information which can
+be extremely large. If you encounter problems, you can disable it by passing
+`--fission=no` to Bazel.
+
+### Debugging other build modes
+
+If you have an issue that only reproduces with another build mode, you can still
+enable debug information in that mode by passing `--feature=debug_info_flags` to
+Bazel.
 
 ### Debugging on MacOS
 
@@ -279,7 +358,7 @@ for more information. To workaround, provide the `--spawn_strategy=local` option
 to Bazel for the debug build, like:
 
 ```shell
-bazel build --spawn_strategy=local -c dbg //explorer
+bazel build --spawn_strategy=local -c dbg //toolchain
 ```
 
 You should then be able to debug with `lldb`.

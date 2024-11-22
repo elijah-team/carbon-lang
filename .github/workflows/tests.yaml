@@ -2,13 +2,17 @@
 # Exceptions. See /LICENSE for license information.
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-name: test
+name: Tests
 
 on:
   push:
-    branches: [trunk]
-  pull_request_target:
+    branches: [trunk, action-test]
+  pull_request:
   merge_group:
+
+permissions:
+  contents: read # For actions/checkout.
+  pull-requests: read # For dorny/paths-filter to read pull requests.
 
 # Cancel previous workflows on the PR when there are multiple fast commits.
 # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#concurrency
@@ -20,179 +24,65 @@ jobs:
   test:
     strategy:
       matrix:
-        # At present, these images are newer than "latest". We use them to test
-        # against more recent tooling versions.
-        # https://github.com/actions/runner-images
-        os: [ubuntu-22.04, macos-12]
+        # Test a recent version of each supported OS.
+        runner: ['ubuntu-22.04', 'macos-14']
         build_mode: [fastbuild, opt]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
 
     steps:
-      # Ubuntu images start with 23GB available, and this adds 14GB more. For
-      # comparison, MacOS images have >100GB free.
-      - name: Free up disk space (Ubuntu)
-        if: matrix.os == 'ubuntu-22.04'
-        uses: jlumbroso/free-disk-space@v1.2.0
+      - name: Harden Runner
+        uses: step-security/harden-runner@17d0e2bd7d51742c71671bd19fa12bdc9d40a3d6 # v2.8.1
         with:
-          android: true
-          dotnet: true
-          haskell: true
-          # Although we could delete more, if we run into a limit, it provides a
-          # little flexibility to get space while trying to shrink the build.
-          # There's also support for docker images at head (1.2.0 is still
-          # the latest release).
-          large-packages: false
-          swap-storage: false
+          egress-policy: block
+          # When adding endpoints, see README.md.
+          # prettier-ignore
+          allowed-endpoints: >
+            *.dl.sourceforge.net:443
+            api.github.com:443
+            bcr.bazel.build:443
+            downloads.sourceforge.net:443
+            github.com:443
+            mirrors.kernel.org:443
+            nodejs.org:443
+            oauth2.googleapis.com:443
+            objects.githubusercontent.com:443
+            pypi.org:443
+            releases.bazel.build:443
+            sourceforge.net:443
+            storage.googleapis.com:443
 
-      # Checkout the pull request head or the branch.
-      - name: Checkout pull request
-        if: github.event_name == 'pull_request_target'
-        uses: actions/checkout@v3
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - id: test-setup
+        uses: ./.github/actions/test-setup
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          matrix_runner: ${{ matrix.runner }}
+          base_sha:
+            ${{ github.event_name == 'pull_request' &&
+            github.event.pull_request.base.sha ||
+            github.event.merge_group.base_sha }}
+          remote_cache_key: ${{ secrets.CARBON_BUILDS_GITHUB }}
+          targets_file: ${{ runner.temp }}/targets
 
-      - name: Checkout branch
-        if: github.event_name != 'pull_request_target'
-        uses: actions/checkout@v3
-
-      # Tests should only run on applicable paths, but we still need to have an
-      # action run for the merge queue. We filter steps based on the paths here,
-      # and condition steps on the output.
-      - id: filter
-        uses: dorny/paths-filter@v2
-        with:
-          filters: |
-            ignore:
-              - '**/*.md'
-              - 'LICENSE'
-              - 'CODEOWNERS'
-              - '.git*'
-
-      # Setup Python and related tools.
-      - uses: actions/setup-python@v4
-        if: steps.filter.outputs.ignore == 'false'
-        with:
-          # Match the min version listed in docs/project/contribution_tools.md
-          python-version: '3.9'
-
-      # Use LLVM following:
-      # https://github.com/actions/runner-images/blob/main/images/macos/macos-12-Readme.md
-      # Both 14 and 15 are candidates because GitHub is testing new images.
-      - name: Setup LLVM and Clang (macOS)
-        if: steps.filter.outputs.ignore == 'false' && matrix.os == 'macos-12'
-        run: |
-          LLVM_PATH="$(brew --prefix llvm@15)"
-          if [[ ! -e "${LLVM_PATH}" ]]; then
-            LLVM_PATH="$(brew --prefix llvm@14)"
-          fi
-          echo "Using ${LLVM_PATH}"
-          echo "${LLVM_PATH}/bin" >> $GITHUB_PATH
-          echo '*** ls "${LLVM_PATH}"'
-          ls "${LLVM_PATH}"
-          echo '*** ls "${LLVM_PATH}/bin"'
-          ls "${LLVM_PATH}/bin"
-
-      # Use LLVM following:
-      # https://github.com/actions/runner-images/blob/main/images/linux/Ubuntu2204-Readme.md
-      # Both 14 and 15 are candidates for forwards compatibility, although 15
-      # isn't provided.
-      - name: Setup LLVM and Clang (Ubuntu)
-        if:
-          steps.filter.outputs.ignore == 'false' && matrix.os == 'ubuntu-22.04'
-        run: |
-          LLVM_PATH="/usr/lib/llvm-15"
-          if [[ ! -e "${LLVM_PATH}" ]]; then
-            LLVM_PATH="/usr/lib/llvm-14"
-          fi
-          echo "Using ${LLVM_PATH}"
-          echo "${LLVM_PATH}/bin" >> $GITHUB_PATH
-          echo '*** ls "${LLVM_PATH}"'
-          ls "${LLVM_PATH}"
-          echo '*** ls "${LLVM_PATH}/bin"'
-          ls "${LLVM_PATH}/bin"
-
-      # Print the various tool paths and versions to help in debugging.
-      - name: Print tool debugging info
-        if: steps.filter.outputs.ignore == 'false'
-        run: |
-          echo '*** PATH'
-          echo $PATH
-          echo '*** bazelisk'
-          which bazelisk
-          bazelisk --version
-          echo '*** python'
-          which python
-          python --version
-          echo '*** clang'
-          which clang
-          clang --version
-          echo '*** clang++'
-          which clang++
-          clang++ --version
-
-      # Extract our access key for our build cache.
-      - name: Extract access key
-        if: steps.filter.outputs.ignore == 'false'
-        env:
-          GCP_BUILDS_SERVICE_ACCOUNT: ${{ secrets.GCP_BUILDS_SERVICE_ACCOUNT }}
-        run: |
-          echo "$GCP_BUILDS_SERVICE_ACCOUNT" \
-            | base64 -d > $HOME/gcp-builds-service-account.json
-
-      # We need to replace the `.` with a `_` for the build cache.
-      - name: Setup LLVM and Clang (macOS)
-        if: steps.filter.outputs.ignore == 'false' && matrix.os == 'macos-12'
-        run: |
-          echo "os_for_cache=macos-12" >> $GITHUB_ENV
-      - name: Setup LLVM and Clang (Ubuntu)
-        if:
-          steps.filter.outputs.ignore == 'false' && matrix.os == 'ubuntu-22.04'
-        run: |
-          echo "os_for_cache=ubuntu-22_04" >> $GITHUB_ENV
-
-      # Add our bazel configuration and print basic info to ease debugging.
-      - name: Configure Bazel and print info
-        if: steps.filter.outputs.ignore == 'false'
-        env:
-          # Add a cache version for changes that bazel won't otherwise detect,
-          # like llvm version changes.
-          CACHE_VERSION: 1
-        run: |
-          cat >user.bazelrc <<EOF
-          # Enable remote cache for our CI.
-          build --remote_cache=https://storage.googleapis.com/carbon-builds-github-v${CACHE_VERSION}-${{ env.os_for_cache }}
-          build --google_credentials=$HOME/gcp-builds-service-account.json
-
-          # General build options.
-          build --verbose_failures
-          test --test_output=errors
-          EOF
-          bazelisk info
-
-      # Just for visibility, print space before and after the build.
-      - name: Disk space before build
-        if: steps.filter.outputs.ignore == 'false'
-        run: df -h
-
-      # Build all targets first to isolate build failures.
-      - name: Build (${{ matrix.build_mode }})
-        if: steps.filter.outputs.ignore == 'false'
-        env:
-          # 'libtool_check_unique failed to generate' workaround.
-          # https://github.com/bazelbuild/bazel/issues/14113#issuecomment-999794586
-          BAZEL_USE_CPP_ONLY_TOOLCHAIN: 1
-        run: bazelisk build -c ${{ matrix.build_mode }} //...:all
-
-      # Run all test targets.
+      # Build and run just the tests impacted by the PR or merge group.
       - name: Test (${{ matrix.build_mode }})
-        if: steps.filter.outputs.ignore == 'false'
+        if: steps.test-setup.outputs.has_code == 'true'
+        shell: bash
         env:
           # 'libtool_check_unique failed to generate' workaround.
           # https://github.com/bazelbuild/bazel/issues/14113#issuecomment-999794586
           BAZEL_USE_CPP_ONLY_TOOLCHAIN: 1
-        run: bazelisk test -c ${{ matrix.build_mode }} //...:all
+          TARGETS_FILE: ${{ runner.temp }}/targets
+        run: |
+          # Decrease the jobs sharply if we see repeated failures to try to
+          # work around transient network errors even if it makes things
+          # slower.
+          ./scripts/run_bazel.py \
+            --attempts=5 --jobs-on-last-attempt=4 \
+            test -c ${{ matrix.build_mode }} \
+            --target_pattern_file=$TARGETS_FILE
 
-      # See "Disk space before build".
+      # See "Disk space before build" in `test-setup`.
       - name: Disk space after build
-        if: steps.filter.outputs.ignore == 'false'
+        if: steps.test-setup.outputs.has_code == 'true'
         run: df -h

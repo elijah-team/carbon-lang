@@ -413,13 +413,16 @@ auto FunctionDeclaration::Create(Nonnull<Arena*> arena,
 void CallableDeclaration::PrintIndent(int indent_num_spaces,
                                       llvm::raw_ostream& out) const {
   auto name = GetName(*this);
-  CARBON_CHECK(name) << "Unexpected missing name for `" << *this << "`.";
+  CARBON_CHECK(name, "Unexpected missing name for `{0}`.", *this);
   out.indent(indent_num_spaces) << "fn " << *name << " ";
-  if (!deduced_parameters_.empty()) {
+  if (!deduced_parameters_.empty() || self_pattern_) {
     out << "[";
     llvm::ListSeparator sep;
     for (Nonnull<const GenericBinding*> deduced : deduced_parameters_) {
       out << sep << *deduced;
+    }
+    if (self_pattern_) {
+      out << sep << **self_pattern_;
     }
     out << "]";
   }

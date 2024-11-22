@@ -4,10 +4,13 @@
 
 #include "explorer/interpreter/pattern_match.h"
 
+#include <algorithm>
+
 #include "explorer/ast/value.h"
 #include "explorer/base/arena.h"
 #include "explorer/base/trace_stream.h"
 #include "explorer/interpreter/action.h"
+#include "explorer/interpreter/type_utils.h"
 #include "llvm/Support/Casting.h"
 
 using llvm::cast;
@@ -27,8 +30,8 @@ static auto InitializePlaceholderValue(const ValueNodeView& value_node,
       } else {
         // Location initialized by initializing expression, bind node to
         // address.
-        CARBON_CHECK(v.address())
-            << "Missing location from initializing expression";
+        CARBON_CHECK(v.address(),
+                     "Missing location from initializing expression");
         bindings->Bind(value_node, *v.address());
       }
       break;
@@ -38,19 +41,18 @@ static auto InitializePlaceholderValue(const ValueNodeView& value_node,
         bindings->BindValue(value_node, v.value());
       } else if (v.expression_category() == ExpressionCategory::Reference) {
         // Bind the reference expression value directly.
-        CARBON_CHECK(v.address())
-            << "Missing location from reference expression";
+        CARBON_CHECK(v.address(), "Missing location from reference expression");
         bindings->BindAndPin(value_node, *v.address());
       } else {
         // Location initialized by initializing expression, bind node to
         // address.
-        CARBON_CHECK(v.address())
-            << "Missing location from initializing expression";
+        CARBON_CHECK(v.address(),
+                     "Missing location from initializing expression");
         bindings->Bind(value_node, *v.address());
       }
       break;
     case ExpressionCategory::Initializing:
-      CARBON_FATAL() << "Cannot pattern match an initializing expression";
+      CARBON_FATAL("Cannot pattern match an initializing expression");
       break;
   }
 }
@@ -132,8 +134,8 @@ auto PatternMatch(Nonnull<const Value*> p, ExpressionResult v,
           return true;
         }
         default:
-          CARBON_FATAL() << "expected a tuple value in pattern, not "
-                         << *v.value();
+          CARBON_FATAL("expected a tuple value in pattern, not {0}",
+                       *v.value());
       }
     case Value::Kind::StructValue: {
       const auto& p_struct = cast<StructValue>(*p);
@@ -169,12 +171,12 @@ auto PatternMatch(Nonnull<const Value*> p, ExpressionResult v,
               source_loc, bindings, generic_args, trace_stream, arena);
         }
         default:
-          CARBON_FATAL() << "expected a choice alternative in pattern, not "
-                         << *v.value();
+          CARBON_FATAL("expected a choice alternative in pattern, not {0}",
+                       *v.value());
       }
     case Value::Kind::UninitializedValue:
-      CARBON_FATAL() << "uninitialized value is not allowed in pattern "
-                     << *v.value();
+      CARBON_FATAL("uninitialized value is not allowed in pattern {0}",
+                   *v.value());
     case Value::Kind::FunctionType:
       switch (v.value()->kind()) {
         case Value::Kind::FunctionType: {
@@ -202,14 +204,41 @@ auto PatternMatch(Nonnull<const Value*> p, ExpressionResult v,
       // on the typechecker to ensure that `v.value()` is a type.
       return true;
     case Value::Kind::StaticArrayType: {
+      const auto& p_arr = cast<StaticArrayType>(*p);
       switch (v.value()->kind()) {
         case Value::Kind::TupleType:
         case Value::Kind::TupleValue: {
-          return true;
+          const auto& v_tup = cast<TupleValueBase>(*v.value());
+          if (v_tup.elements().empty()) {
+            return !TypeIsDeduceable(&p_arr.element_type());
+          }
+
+          std::vector<Nonnull<const Value*>> deduced_types;
+          deduced_types.reserve(v_tup.elements().size());
+          for (const auto& tup_elem : v_tup.elements()) {
+            if (!PatternMatch(&p_arr.element_type(), make_expr_result(tup_elem),
+                              source_loc, bindings, generic_args, trace_stream,
+                              arena)) {
+              return false;
+            }
+
+            deduced_types.emplace_back(
+                DeducePatternType(&p_arr.element_type(), tup_elem, arena));
+          }  // for
+
+          return std::adjacent_find(deduced_types.begin(), deduced_types.end(),
+                                    [](const auto& lhs, const auto& rhs) {
+                                      return !TypeEqual(lhs, rhs, std::nullopt);
+                                    }) == deduced_types.end();
         }
         case Value::Kind::StaticArrayType: {
           const auto& v_arr = cast<StaticArrayType>(*v.value());
-          return v_arr.has_size();
+          if (!v_arr.has_size()) {
+            return false;
+          }
+          return PatternMatch(
+              &p_arr.element_type(), make_expr_result(&v_arr.element_type()),
+              source_loc, bindings, generic_args, trace_stream, arena);
         }
         default:
           return false;

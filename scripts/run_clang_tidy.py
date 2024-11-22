@@ -31,7 +31,7 @@ def main() -> None:
         files = ["^(?!.*/(bazel-|third_party)).*$"]
 
     # Set the repo root as the working directory.
-    os.chdir(Path(__file__).resolve().parent.parent)
+    os.chdir(Path(__file__).parents[1])
     # Ensure create_compdb has been run.
     subprocess.check_call(["./scripts/create_compdb.py"])
 
@@ -40,7 +40,7 @@ def main() -> None:
     # versions, but avoids version skew between the script and clang-tidy
     # itself.
     with Path(
-        "./bazel-execroot/external/bazel_cc_toolchain/"
+        "./external/_main~clang_toolchain_extension~bazel_cc_toolchain/"
         "clang_detected_variables.bzl"
     ).open() as f:
         clang_vars = f.read()

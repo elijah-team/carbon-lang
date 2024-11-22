@@ -4,7 +4,6 @@
 
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")
 load("//bazel/cc_toolchains:defs.bzl", "cc_env")
-load("//bazel/sh_run:rules.bzl", "glob_sh_run")
 load("//testing/file_test:rules.bzl", "file_test")
 
 package(default_visibility = [
@@ -22,6 +21,9 @@ cc_library(
     name = "main",
     srcs = ["main.cpp"],
     hdrs = ["main.h"],
+    # Running clang-tidy is slow, and explorer is currently feature frozen, so
+    # don't spend time linting it.
+    tags = ["no-clang-tidy"],
     deps = [
         "//common:error",
         "//common:ostream",
@@ -35,6 +37,9 @@ cc_binary(
     name = "explorer",
     srcs = ["main_bin.cpp"],
     env = cc_env(),
+    # Running clang-tidy is slow, and explorer is currently feature frozen, so
+    # don't spend time linting it.
+    tags = ["no-clang-tidy"],
     deps = [
         ":main",
         "//common:bazel_working_dir",
@@ -42,35 +47,36 @@ cc_binary(
     ],
 )
 
-cc_library(
-    name = "file_test_common",
+cc_binary(
+    name = "file_test",
     testonly = 1,
     srcs = ["file_test.cpp"],
+    # Running clang-tidy is slow, and explorer is currently feature frozen, so
+    # don't spend time linting it.
+    tags = ["no-clang-tidy"],
     deps = [
         ":main",
         "//common:check",
         "//testing/base:test_raw_ostream",
         "//testing/file_test:file_test_base",
-        "@com_google_absl//absl/flags:flag",
-        "@com_googlesource_code_re2//:re2",
+        "@abseil-cpp//absl/flags:flag",
+        "@re2",
     ],
 )
 
 file_test(
-    name = "file_test",
+    name = "file_test.notrace",
     size = "small",
+    prebuilt_binary = ":file_test",
     shard_count = 20,
     tests = glob(["testdata/**/*.carbon"]),
-    deps = [
-        ":file_test_common",
-        "@com_googlesource_code_re2//:re2",
-    ],
 )
 
 file_test(
     name = "file_test.trace",
     size = "small",
     args = ["--trace"],
+    prebuilt_binary = ":file_test",
     shard_count = 30,
     tests = glob(
         ["testdata/**/*.carbon"],
@@ -86,24 +92,6 @@ file_test(
             "testdata/linked_list/typed_linked_list.carbon",
         ],
     ),
-    deps = [":file_test_common"],
-)
-
-glob_sh_run(
-    args = ["$(location //explorer)"],
-    data = ["//explorer"],
-    file_exts = ["carbon"],
-)
-
-glob_sh_run(
-    args = [
-        "$(location //explorer)",
-        "--parser_debug",
-        "--trace_file=-",
-    ],
-    data = ["//explorer"],
-    file_exts = ["carbon"],
-    run_ext = "verbose",
 )
 
 filegroup(

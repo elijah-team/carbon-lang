@@ -33,7 +33,7 @@ class Witness;
 // there is only one kind of step, a string specifying a child field by name,
 // but that may change as Carbon develops. Note that an empty ElementPath
 // refers to the initial Value itself.
-class ElementPath {
+class ElementPath : public Printable<ElementPath> {
  public:
   // Constructs an empty ElementPath.
   ElementPath() = default;
@@ -42,7 +42,7 @@ class ElementPath {
   // of a field. However, inside a generic, when there is a field
   // access on something of a generic type, e.g., `T`, then we also
   // need `witness`, a pointer to the witness table containing that field.
-  class Component {
+  class Component : public Printable<Component> {
    public:
     explicit Component(Nonnull<const Element*> element) : element_(element) {}
     Component(Nonnull<const Element*> element,
@@ -113,8 +113,8 @@ class ElementPath {
   // Removes all trailing `BaseElement`s, errors if there are no base elements.
   auto RemoveTrailingBaseElements() -> void {
     CARBON_CHECK(!components_.empty() && components_.back().element()->kind() ==
-                                             ElementKind::BaseElement)
-        << "No base elements to remove.";
+                                             ElementKind::BaseElement,
+                 "No base elements to remove.");
     const auto r_it = std::find_if(
         components_.rbegin(), components_.rend(), [](const Component& c) {
           return c.element()->kind() != ElementKind::BaseElement;
@@ -127,8 +127,6 @@ class ElementPath {
       out << "." << component;
     }
   }
-
-  LLVM_DUMP_METHOD void Dump() const { Print(llvm::errs()); }
 
  private:
   // The representation of ElementPath describes how to locate a Value within

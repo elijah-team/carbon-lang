@@ -81,7 +81,7 @@ auto IsType(Nonnull<const Value*> value) -> bool {
 }
 
 auto TypeIsDeduceable(Nonnull<const Value*> type) -> bool {
-  CARBON_CHECK(IsType(type)) << "expected a type, but found " << *type;
+  CARBON_CHECK(IsType(type), "expected a type, but found {0}", *type);
 
   switch (type->kind()) {
     case Value::Kind::IntValue:
@@ -108,7 +108,7 @@ auto TypeIsDeduceable(Nonnull<const Value*> type) -> bool {
     case Value::Kind::ParameterizedEntityName:
     case Value::Kind::MemberName:
     case Value::Kind::MixinPseudoType:
-      CARBON_FATAL() << "non-type value";
+      CARBON_FATAL("non-type value");
     case Value::Kind::IntType:
     case Value::Kind::BoolType:
     case Value::Kind::TypeType:
@@ -221,5 +221,30 @@ auto IsTypeOfType(Nonnull<const Value*> value) -> bool {
       // A value of one of these types is itself always a type.
       return true;
   }
+}
+
+auto DeducePatternType(Nonnull<const Value*> type,
+                       Nonnull<const Value*> expected, Nonnull<Arena*> arena)
+    -> Nonnull<const Value*> {
+  if (type->kind() == Value::Kind::StaticArrayType) {
+    const auto& arr = cast<StaticArrayType>(*type);
+    const size_t size = arr.has_size() ? arr.size() : GetSize(expected);
+    if (!IsNonDeduceableType(&arr.element_type())) {
+      CARBON_CHECK(expected->kind() == Value::Kind::StaticArrayType ||
+                   expected->kind() == Value::Kind::TupleType);
+
+      Nonnull<const Value*> expected_elem_type =
+          expected->kind() == Value::Kind::StaticArrayType
+              ? &cast<StaticArrayType>(expected)->element_type()
+              : cast<TupleType>(expected)->elements()[0];
+      return arena->New<StaticArrayType>(
+          DeducePatternType(&arr.element_type(), expected_elem_type, arena),
+          size);
+    } else {
+      return arena->New<StaticArrayType>(&arr.element_type(), size);
+    }
+  }
+
+  return expected;
 }
 }  // namespace Carbon
