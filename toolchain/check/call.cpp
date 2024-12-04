@@ -46,7 +46,7 @@ static auto ResolveCalleeInCall(Context& context, SemIR::LocId loc_id,
                                 llvm::ArrayRef<SemIR::InstId> arg_ids)
     -> std::optional<SemIR::SpecificId> {
   // Check that the arity matches.
-  auto params = context.inst_blocks().GetOrEmpty(entity.param_refs_id);
+  auto params = context.inst_blocks().GetOrEmpty(entity.param_patterns_id);
   if (arg_ids.size() != params.size()) {
     CARBON_DIAGNOSTIC(CallArgCountMismatch, Error,
                       "{0} argument{0:s} passed to "
@@ -177,7 +177,8 @@ auto PerformCall(Context& context, SemIR::LocId loc_id, SemIR::InstId callee_id,
         &context.emitter(), [&](auto& builder) {
           CARBON_DIAGNOSTIC(IncompleteReturnTypeHere, Note,
                             "return type declared here");
-          builder.Note(function.return_slot_id, IncompleteReturnTypeHere);
+          builder.Note(function.return_slot_pattern_id,
+                       IncompleteReturnTypeHere);
         });
     return CheckFunctionReturnType(context, callee_id, function,
                                    *callee_specific_id);

@@ -12,6 +12,7 @@
 #include "toolchain/check/handle.h"
 #include "toolchain/check/import_ref.h"
 #include "toolchain/check/interface.h"
+#include "toolchain/check/literal.h"
 #include "toolchain/check/merge.h"
 #include "toolchain/check/modifiers.h"
 #include "toolchain/check/name_component.h"
@@ -44,11 +45,12 @@ auto HandleParseNode(Context& context, Parse::ReturnTypeId node_id) -> bool {
   // Propagate the type expression.
   auto [type_node_id, type_inst_id] = context.node_stack().PopExprWithNodeId();
   auto type_id = ExprAsType(context, type_node_id, type_inst_id).type_id;
-  auto return_slot_id = context.AddPatternInst<SemIR::ReturnSlotPattern>(
-      node_id, {.type_id = type_id, .type_inst_id = type_inst_id});
+  auto return_slot_pattern_id =
+      context.AddPatternInst<SemIR::ReturnSlotPattern>(
+          node_id, {.type_id = type_id, .type_inst_id = type_inst_id});
   auto param_pattern_id = context.AddPatternInst<SemIR::OutParamPattern>(
       node_id, {.type_id = type_id,
-                .subpattern_id = return_slot_id,
+                .subpattern_id = return_slot_pattern_id,
                 .runtime_index = SemIR::RuntimeParamIndex::Unknown});
   context.node_stack().Push(node_id, param_pattern_id);
   return true;
@@ -101,7 +103,7 @@ static auto MergeFunctionRedecl(Context& context, SemIRLoc new_loc,
     // Track the signature from the definition, so that IDs in the body
     // match IDs in the signature.
     prev_function.MergeDefinition(new_function);
-    prev_function.return_slot_id = new_function.return_slot_id;
+    prev_function.return_slot_pattern_id = new_function.return_slot_pattern_id;
   }
   if ((prev_import_ir_id.is_valid() && !new_is_import)) {
     ReplacePrevInstForMerge(context, new_function.parent_scope_id,
@@ -182,10 +184,8 @@ static auto BuildFunctionDecl(Context& context,
   }
 
   auto name = PopNameComponent(context, return_slot_pattern_id);
-  if (!name.params_id.is_valid()) {
-    CARBON_CHECK(!name.param_patterns_id.is_valid());
+  if (!name.param_patterns_id.is_valid()) {
     context.TODO(node_id, "function with positional parameters");
-    name.params_id = SemIR::InstBlockId::Empty;
     name.param_patterns_id = SemIR::InstBlockId::Empty;
   }
 
@@ -214,8 +214,13 @@ static auto BuildFunctionDecl(Context& context,
       parent_scope_inst) {
     if (auto class_decl = parent_scope_inst->TryAs<SemIR::ClassDecl>()) {
       auto& class_info = context.classes().Get(class_decl->class_id);
-      CARBON_CHECK(virtual_modifier != SemIR::Function::VirtualModifier::Impl ||
-                   class_info.is_dynamic);
+      if (virtual_modifier == SemIR::Function::VirtualModifier::Impl &&
+          !class_info.base_id.is_valid()) {
+        CARBON_DIAGNOSTIC(ImplWithoutBase, Error, "impl without base class");
+        context.emitter().Build(node_id, ImplWithoutBase).Emit();
+      }
+      // TODO: If this is an `impl` function, check there's a matching base
+      // function that's impl or virtual.
       class_info.is_dynamic = true;
     }
   }
@@ -239,7 +244,6 @@ static auto BuildFunctionDecl(Context& context,
       SemIR::Function{{name_context.MakeEntityWithParamsBase(
                           name, decl_id, is_extern, introducer.extern_library)},
                       {.return_slot_pattern_id = name.return_slot_pattern_id,
-                       .return_slot_id = name.return_slot_id,
                        .virtual_modifier = virtual_modifier}};
   if (is_definition) {
     function_info.definition_id = decl_id;
@@ -300,8 +304,11 @@ static auto BuildFunctionDecl(Context& context,
         !function_info.param_patterns_id.is_valid() ||
         !context.inst_blocks().Get(function_info.param_patterns_id).empty() ||
         (return_type_id.is_valid() &&
-         return_type_id != context.GetInt32Type() &&
-         return_type_id != context.GetTupleType({}))) {
+         return_type_id != context.GetTupleType({}) &&
+         // TODO: Decide on valid return types for `Main.Run`. Perhaps we should
+         // have an interface for this.
+         return_type_id != MakeIntType(context, node_id, SemIR::IntKind::Signed,
+                                       context.ints().Add(32)))) {
       CARBON_DIAGNOSTIC(InvalidMainRunSignature, Error,
                         "invalid signature for `Main.Run` function; expected "
                         "`fn ()` or `fn () -> i32`");
@@ -338,29 +345,31 @@ static auto HandleFunctionDefinitionAfterSignature(
   context.AddCurrentCodeBlockToFunction();
 
   // Check the return type is complete.
-  CheckFunctionReturnType(context, function.return_slot_id, function,
+  CheckFunctionReturnType(context, function.return_slot_pattern_id, function,
                           SemIR::SpecificId::Invalid);
 
+  auto params_to_complete =
+      context.inst_blocks().GetOrEmpty(function.call_params_id);
+  if (function.return_slot_pattern_id.is_valid()) {
+    // Exclude the return slot because it's diagnosed above.
+    params_to_complete = params_to_complete.drop_back();
+  }
   // Check the parameter types are complete.
-  for (auto param_ref_id : llvm::concat<const SemIR::InstId>(
-           context.inst_blocks().GetOrEmpty(function.implicit_param_refs_id),
-           context.inst_blocks().GetOrEmpty(function.param_refs_id))) {
+  for (auto param_ref_id : params_to_complete) {
     if (param_ref_id == SemIR::InstId::BuiltinErrorInst) {
       continue;
     }
-    auto param_info =
-        SemIR::Function::GetParamFromParamRefId(context.sem_ir(), param_ref_id);
 
     // The parameter types need to be complete.
-    context.TryToCompleteType(param_info.inst.type_id, [&] {
-      CARBON_DIAGNOSTIC(
-          IncompleteTypeInFunctionParam, Error,
-          "parameter has incomplete type {0} in function definition",
-          TypeOfInstId);
-      return context.emitter().Build(param_info.inst_id,
-                                     IncompleteTypeInFunctionParam,
-                                     param_info.inst_id);
-    });
+    context.TryToCompleteType(
+        context.insts().GetAs<SemIR::AnyParam>(param_ref_id).type_id, [&] {
+          CARBON_DIAGNOSTIC(
+              IncompleteTypeInFunctionParam, Error,
+              "parameter has incomplete type {0} in function definition",
+              TypeOfInstId);
+          return context.emitter().Build(
+              param_ref_id, IncompleteTypeInFunctionParam, param_ref_id);
+        });
   }
 
   context.node_stack().Push(node_id, function_id);
@@ -403,7 +412,9 @@ auto HandleParseNode(Context& context, Parse::FunctionDefinitionId node_id)
   // If the `}` of the function is reachable, reject if we need a return value
   // and otherwise add an implicit `return;`.
   if (context.is_current_position_reachable()) {
-    if (context.functions().Get(function_id).return_slot_id.is_valid()) {
+    if (context.functions()
+            .Get(function_id)
+            .return_slot_pattern_id.is_valid()) {
       CARBON_DIAGNOSTIC(
           MissingReturnStatement, Error,
           "missing `return` at end of function with declared return type");
